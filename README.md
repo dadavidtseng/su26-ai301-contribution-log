@@ -3,7 +3,7 @@
 **Contribution Number:** 1  
 **Student:** Yu-Wei Tseng  
 **Issue:** [lakekeeper#1064 — Deleted namespaces may leave traces on filesystems](https://github.com/lakekeeper/lakekeeper/issues/1064)  
-**Status:** Phase I Complete
+**Status:** Phase II Complete
 
 ---
 
@@ -19,19 +19,28 @@ The issue is also well-scoped and has clear maintainer guidance. The maintainer 
 
 ### Problem Description
 
-[In your own words, what's broken or missing?]
+When a namespace is created in Lakekeeper and a table is created within it, the system creates a corresponding folder on filesystem-based storage backends (HDFS, ADLS). However, when the namespace is dropped (after all tables within it have been dropped), the namespace folder is **not deleted** from the storage backend. On object stores like S3 this is invisible because prefixes only exist implicitly, but on true filesystem backends (HDFS, ADLS) the empty folder persists as a visible leftover.
 
 ### Expected Behavior
 
-[What should happen?]
+After dropping a namespace that contains no tables (and whose storage folder is empty), the corresponding folder on the filesystem storage backend should be cleaned up — provided no other table in the same warehouse shares the same location prefix.
 
 ### Current Behavior
 
-[What actually happens?]
+The namespace folder remains on the filesystem even after the namespace is dropped. The `drop_namespace` code path in `server/namespace.rs` only handles:
+- Deleting the namespace record from PostgreSQL
+- Scheduling purge tasks for child tables (in recursive drops)
+- Removing namespace and table authorizer entries
+
+It never interacts with the storage backend to remove the namespace's folder.
 
 ### Affected Components
 
-[Which parts of the codebase are involved?]
+- `crates/lakekeeper/src/server/namespace.rs` — `drop_namespace()` (line 464) and `try_recursive_drop()` (line 709): the business logic entry points that must be extended to trigger namespace folder cleanup.
+- `crates/lakekeeper/src/service/catalog_store/namespace.rs` — `NamespaceDropInfo` struct (line 329): needs to include namespace location(s) so the caller can schedule cleanup.
+- `crates/lakekeeper-storage-postgres/src/namespace.rs` — `drop_namespace()` (line 651): the SQL query that gathers drop info needs to also retrieve the namespace's `location` property from `namespace_properties`.
+- `crates/lakekeeper/src/server/io.rs` — `remove_all()` and `list_location()`: existing helpers for storage interaction that can be reused.
+- `crates/lakekeeper/src/service/tasks/tabular_purge_queue.rs` — existing purge task pattern to follow as a model.
 
 ---
 
@@ -39,19 +48,45 @@ The issue is also well-scoped and has clear maintainer guidance. The maintainer 
 
 ### Environment Setup
 
-[Notes on setting up your local development environment - challenges you faced, how you solved them]
+Set up following the developer guide in `docs/docs/developer-guide.md`:
+
+1. Start a PostgreSQL 17 container:
+   ```bash
+   docker run -d --name postgres-16 -p 5432:5432 -e POSTGRES_PASSWORD=postgres postgres:17
+   ```
+2. Create `.env` with the required environment variables:
+   ```bash
+   echo 'export DATABASE_URL=postgresql://postgres:postgres@localhost:5432/postgres' > .env
+   echo 'export ICEBERG_REST__PG_ENCRYPTION_KEY="abc"' >> .env
+   echo 'export ICEBERG_REST__PG_DATABASE_URL_READ="postgresql://postgres:postgres@localhost/postgres"' >> .env
+   echo 'export ICEBERG_REST__PG_DATABASE_URL_WRITE="postgresql://postgres:postgres@localhost/postgres"' >> .env
+   source .env
+   ```
+3. Install prerequisites: `cargo install sqlx-cli cargo-nextest`
+4. Run migrations: `sqlx database create && sqlx migrate run --source crates/lakekeeper-storage-postgres/migrations`
+5. Verify the build compiles: `cargo build --all-features`
 
 ### Steps to Reproduce
 
-1. [Step 1]
-2. [Step 2]
-3. [Observed result]
+1. Set up the local dev environment with a filesystem-aware storage backend (use the minimal docker-compose example with Minio via `docker compose -f docker-compose.yaml -f docker-compose-build.yaml up -d --build` in the `examples/minimal` directory — Minio doesn't exhibit folder remnants like ADLS, but the code path can be verified through tests and code inspection).
+2. Create a warehouse backed by the storage profile.
+3. Create a namespace (e.g., `my_namespace`) — this sets a `location` property like `s3://bucket/warehouse-uuid/my_namespace-uuid/` in the namespace's properties stored in PostgreSQL.
+4. Create a table within the namespace — this triggers the creation of the namespace folder on storage via the table creation path.
+5. Drop the table (with `purge=true`) — the table's data folder is cleaned up via `TabularPurgeTask`.
+6. Drop the namespace.
+7. **Expected:** The now-empty namespace folder is removed from storage.
+8. **Actual:** The namespace folder persists on storage. The `drop_namespace()` function in `server/namespace.rs` never schedules any storage cleanup for the namespace's own location.
+
+**Code-level evidence:** In `server/namespace.rs` lines 533–577, the non-recursive drop path calls `C::drop_namespace()` (database only) and commits — no storage interaction. In the recursive path (lines 738–760), only child tables' locations are scheduled for purge via `TabularPurgeTask`. The namespace's own location is never referenced.
 
 ### Reproduction Evidence
 
-- **Commit showing reproduction:** [Link to commit in your fork]
-- **Screenshots/logs:** [If applicable]
-- **My findings:** [What you discovered during reproduction]
+- **Branch link:** https://github.com/dadavidtseng/lakekeeper/tree/fix-issue-1064 *(to be created)*
+- **My findings:** Confirmed through code inspection that:
+  - The `NamespaceDropInfo` struct (line 329 in `service/catalog_store/namespace.rs`) contains `child_namespaces`, `child_tables`, and `open_tasks` — but **no namespace location**.
+  - The PostgreSQL `drop_namespace()` function (line 651 in `lakekeeper-storage-postgres/src/namespace.rs`) queries for child namespaces, tabulars, and tasks — but **does not query `namespace_properties`** for the `location` key.
+  - The `try_recursive_drop()` function (line 738) only schedules `TabularPurgeTask` for child tables, not for namespace folders.
+  - By contrast, the table drop path in `server/generic_tables/drop.rs` correctly schedules `TabularPurgeTask` with the table's location for storage cleanup.
 
 ---
 
@@ -59,30 +94,61 @@ The issue is also well-scoped and has clear maintainer guidance. The maintainer 
 
 ### Analysis
 
-[Your analysis of the root cause - what's causing the issue?]
+The root cause is straightforward: the namespace drop code path was never wired up to clean the namespace's storage location. The table drop path has a well-established pattern for storage cleanup (schedule a `TabularPurgeTask` that calls `remove_all()`), but this pattern was simply never applied to namespace folders.
+
+The maintainer specified two safety conditions:
+1. The folder must be empty (no files remaining).
+2. No other table in the same warehouse uses the same location prefix.
 
 ### Proposed Solution
 
-[High-level description of your fix approach]
+After dropping the namespace from the database, add a step that:
+1. Retrieves the namespace's `location` from its properties.
+2. Checks that the location is empty on the storage backend (using `list_location()`).
+3. Checks that no other active tabular in the same warehouse shares the same location prefix.
+4. If both checks pass, removes the namespace folder (using `remove_all()` or a targeted directory delete).
+
+This cleanup should happen **after** the database transaction commits (same pattern as table purge tasks) to avoid deleting storage for a namespace whose DB deletion might roll back.
 
 ### Implementation Plan
 
 Using UMPIRE framework (adapted):
 
-**Understand:** [Restate the problem]
+**Understand:** When a namespace is dropped, the corresponding folder on filesystem-based storage backends (HDFS, ADLS) is not cleaned up. The fix must delete the folder only if it is empty and not shared by any other table in the warehouse.
 
-**Match:** [What similar patterns/solutions exist in the codebase?]
+**Match:** The table purge pattern in `service/tasks/tabular_purge_queue.rs` is the closest existing solution. It:
+- Receives a location from the drop info
+- Gets the warehouse's FileIO
+- Calls `remove_all()` on the location
 
-**Plan:** [Step-by-step implementation plan]
-1. [Modify file X to do Y]
-2. [Add function Z]
-3. [Update tests]
+For namespace cleanup, we can either reuse `TabularPurgeTask` or create a lightweight inline cleanup (since namespace folders should already be empty, unlike table folders which contain data files).
 
-**Implement:** [Link to your branch/commits as you work]
+**Plan:**
+1. Modify `NamespaceDropInfo` in `service/catalog_store/namespace.rs` to include `namespace_locations: Vec<(NamespaceId, Location)>` — the location of the dropped namespace (and child namespaces in recursive drops).
+2. Update the SQL query in `lakekeeper-storage-postgres/src/namespace.rs` `drop_namespace()` to extract the `location` from `namespace_properties` JSON for the dropped namespace (and child namespaces).
+3. In `server/namespace.rs`, after the DB transaction commits:
+   - For each namespace location, use the warehouse's `storage_profile.file_io()` to get a storage handle.
+   - Call `list_location()` to check if the folder is empty.
+   - Query whether any remaining tabular in the warehouse shares the location prefix.
+   - If both conditions are satisfied, call `remove_all()` to delete the folder.
+4. Add unit tests in `crates/lakekeeper-integration-tests/tests/drop_recursive.rs` (or a new test file) that verify:
+   - Namespace folder is deleted when empty and unshared.
+   - Namespace folder is NOT deleted when non-empty.
+   - Namespace folder is NOT deleted when another table shares the location.
+5. Run `cargo nextest run --all-features` to confirm no regressions.
 
-**Review:** [Self-review checklist - does it follow the project's contribution guidelines?]
+**Implement:** https://github.com/dadavidtseng/lakekeeper/tree/fix-issue-1064 *(work will begin in Phase III)*
 
-**Evaluate:** [How will you verify it works?]
+**Review:** Self-review checklist:
+- PR title follows [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/) format (e.g., `fix: clean up namespace folder on filesystem after drop`)
+- Run `just check-clippy` and `just fix-format` before push
+- Run `just sqlx-prepare` if any SQL changes are made
+- Verify against the developer guide's CI requirements
+
+**Evaluate:**
+- Manual: Reproduce the steps above and verify the namespace folder is removed after drop.
+- Automated: New test cases covering the three scenarios (empty+unshared → deleted, non-empty → kept, shared location → kept).
+- Regression: Full test suite passes (`cargo nextest run --all-features`).
 
 ---
 
@@ -90,66 +156,46 @@ Using UMPIRE framework (adapted):
 
 ### Unit Tests
 
-- [ ] Test case 1: [Description]
-- [ ] Test case 2: [Description]
-- [ ] Test case 3: [Description]
+- [ ] Test: dropping a namespace with an empty, unshared storage location removes the folder
+- [ ] Test: dropping a namespace whose storage folder is non-empty does NOT remove the folder
+- [ ] Test: dropping a namespace whose location is shared by another table in the warehouse does NOT remove the folder
 
 ### Integration Tests
 
-- [ ] Integration scenario 1
-- [ ] Integration scenario 2
+- [ ] Recursive drop with purge cleans up both table data and namespace folders
+- [ ] Non-recursive drop of an empty namespace cleans up the folder
 
 ### Manual Testing
 
-[What you tested manually and results]
+Will verify against the minimal docker-compose example with Minio to confirm end-to-end behavior.
 
 ---
 
 ## Implementation Notes
 
-### Week [X] Progress
-
-[What you built this week, challenges faced, decisions made]
-
-### Week [Y] Progress
-
-[Continue documenting as you work]
+*(To be filled during Phase III)*
 
 ### Code Changes
 
-- **Files modified:** [List]
-- **Key commits:** [Links to important commits]
-- **Approach decisions:** [Why you chose certain approaches]
+- **Files to modify:**
+  - `crates/lakekeeper/src/service/catalog_store/namespace.rs` — extend `NamespaceDropInfo`
+  - `crates/lakekeeper-storage-postgres/src/namespace.rs` — add namespace location to drop query
+  - `crates/lakekeeper/src/server/namespace.rs` — add storage cleanup after DB commit
+  - `crates/lakekeeper-integration-tests/tests/` — new or extended test cases
 
 ---
 
 ## Pull Request
 
-**PR Link:** [GitHub PR URL when submitted]
+**PR Link:** *(To be created in Phase III)*
 
-**PR Description:** [Draft or final PR description - much of the content above can be adapted]
-
-**Maintainer Feedback:**
-- [Date]: [Summary of feedback received]
-- [Date]: [How you addressed it]
-
-**Status:** [Awaiting review / Iterating / Approved / Merged]
+**Status:** Not yet started
 
 ---
 
 ## Learnings & Reflections
 
-### Technical Skills Gained
-
-[What you learned technically]
-
-### Challenges Overcome
-
-[What was hard and how you solved it]
-
-### What I'd Do Differently Next Time
-
-[Reflection on your process]
+*(To be filled in Phase IV)*
 
 ---
 
@@ -157,3 +203,5 @@ Using UMPIRE framework (adapted):
 
 - [Lakekeeper Issue #1064](https://github.com/lakekeeper/lakekeeper/issues/1064)
 - [Lakekeeper Repository](https://github.com/lakekeeper/lakekeeper)
+- [Lakekeeper Developer Guide](https://github.com/lakekeeper/lakekeeper/blob/main/docs/docs/developer-guide.md)
+- [Conventional Commits Specification](https://www.conventionalcommits.org/en/v1.0.0/)
