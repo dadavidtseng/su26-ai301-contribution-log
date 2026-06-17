@@ -3,7 +3,7 @@
 **Contribution Number:** 1  
 **Student:** Yu-Wei Tseng  
 **Issue:** [lakekeeper#1064 — Deleted namespaces may leave traces on filesystems](https://github.com/lakekeeper/lakekeeper/issues/1064)  
-**Status:** Phase III In Progress
+**Status:** Phase IV Complete
 
 ---
 
@@ -213,15 +213,36 @@ Tests are located in `crates/lakekeeper-integration-tests/tests/namespace_storag
 
 ## Pull Request
 
-**PR Link:** *(To be created in Phase IV)*
+**PR Link:** https://github.com/lakekeeper/lakekeeper/pull/1858
 
-**Status:** Ready for PR submission
+**PR Description:** Fixes issue #1064 by adding best-effort storage cleanup for namespace folders when a namespace is dropped. On filesystem-based storage backends (HDFS, ADLS), the namespace's storage folder is now checked for emptiness after the database transaction commits and removed if empty.
+
+**Maintainer Feedback:**
+- June 17: PR submitted. CLA signed. Awaiting maintainer approval for CI workflows and code review.
+
+**Status:** Awaiting review
 
 ---
 
 ## Learnings & Reflections
 
-*(To be filled in Phase IV)*
+### Technical Skills Gained
+
+- **Rust and async patterns:** Gained hands-on experience with Rust's trait system, async/await, and generic type bounds (e.g., adding `SecretStore` bounds to `try_recursive_drop`). Learned how `#[async_trait]` expands code and affects clippy lints like `too_many_lines`.
+- **SQL and sqlx offline mode:** Learned how sqlx's compile-time query verification works with offline `.sqlx/` cache files. Modifying a SQL query means computing the new query hash, updating the JSON cache, and running `just sqlx-prepare` — a workflow not documented outside the developer guide.
+- **Open source tooling:** Used the project's `justfile` recipes (`check-clippy`, `fix-format`, `sqlx-prepare`) and learned to install and use `cargo-sort` for Cargo.toml formatting consistency.
+
+### Challenges Overcome
+
+- **Git CRLF issues on Windows/WSL:** Developing on WSL with a Windows-mounted filesystem caused phantom diffs across 861 files due to line-ending mismatches. Resolved with `git config core.autocrlf input` and a full checkout reset.
+- **sqlx cache management:** Adding new columns to the SQL CTE required manually computing the updated query hash and creating the new cache JSON file. This was the most confusing part of the process until I understood how the offline verification pipeline works.
+- **Clippy strictness:** The project enforces `-D warnings` across multiple feature flag combinations (7 separate clippy passes). Two lints caught issues in my code: `too_many_lines` (function exceeded 100 lines) and `useless_conversion` (redundant `.into_iter()` call). Both were straightforward fixes once identified.
+
+### What I'd Do Differently Next Time
+
+- **Read the full developer guide earlier.** I would have saved time on the sqlx cache workflow and `just` recipes if I'd read `DEVELOPMENT.md` and `docs/developer-guide.md` thoroughly before starting implementation.
+- **Run the full CI checks locally before the final push.** I discovered clippy and cargo-sort issues only after thinking I was ready to submit. Running `just check-clippy` and `just fix-format` earlier in the process would have caught these sooner.
+- **Commit more incrementally.** My commits were reasonably atomic, but I could have been more disciplined about running lint checks after each commit rather than batching them at the end.
 
 ---
 
