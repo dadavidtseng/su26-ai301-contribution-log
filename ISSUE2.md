@@ -153,13 +153,53 @@ Using UMPIRE framework:
 
 ## Testing Strategy
 
-*(To be completed in Phase III)*
+### Test Infrastructure Used
+- **`quick_test.rs`**: Used during development to rapidly verify the idempotency fix with the drizzle-orm reproduction case. Modified the `source` string to the reproduction snippet, ran with `cargo test -p biome_js_formatter --test quick_test quick_test -- --ignored --nocapture`, verified `format(format(x)) === format(x)`.
+- **Snapshot tests with `cargo-insta`**: Created a new internal test directory at `crates/biome_js_formatter/tests/specs/js/module/call/member_chain_object_arg/` with `options.json` (lineWidth: 120) and a test file covering three cases.
+
+### Test Cases Added
+1. **Drizzle-ORM reproduction** (`member_chain_object_arg.js`): Method chain `integer().primaryKey().generatedByDefaultAsIdentity({ ... })` with an object literal exceeding lineWidth. Includes both "already-formatted" (expanded) and "unformatted" (inline) variants to verify they converge to the same output.
+2. **Fastify-style reproduction**: `reply.code(409).send({ error: "Conflict", message: "..." })` — shorter chain with a breaking object argument. Both formatted and inline variants included.
+3. **Edge case — multiple object args**: `client.query(...).options({...}).transform({...})` — chain with object literal arguments in multiple calls.
+
+### Validation Steps
+1. **First pass**: `cargo test -p biome_js_formatter` — generates new snapshots. Accepted with `cargo insta accept`.
+2. **Second pass**: Same command — verifies the formatted output is stable (idempotent). The test infrastructure re-formats the snapshot output and asserts it matches. All passed.
+3. **Full regression check**: 1464 tests total — 1457 passed unchanged, 7 snapshot updates (1 internal + 6 Prettier comparisons where Biome now diverges by expanding chains that Prettier keeps inline).
+4. **Manual binary verification**: Built release binary (`cargo build --bin biome --release`), ran `biome format --write repro.js` twice in an isolated directory, confirmed Pass 1 === Pass 2.
+5. **Linting**: `cargo fmt -- --check` (clean), `cargo clippy -p biome_js_formatter` (no warnings).
 
 ---
 
 ## Implementation Notes
 
-*(To be completed in Phase III)*
+### What I Built
+**Fix**: Modified the `format_content` closure in `crates/biome_js_formatter/src/utils/member_chain/mod.rs` (lines 390–418) to force the expanded layout when `last_group().will_break()` returns true, rather than emitting `expand_parent()` + `best_fitting!`.
+
+**Root cause analysis**: The idempotency violation is a cascade across formatting passes:
+1. **Pass 1**: The object literal argument `{ name: "example_id_seq", ... }` is inline in the source. `object_like.rs` formats it with `GroupMode::Flat`. The call arguments' `grouped_breaks = false`, so the `BestFitting` includes all variants (flat, middle, expanded). The flat variant puts the entire object inline, which exceeds `lineWidth`. The member chain's `best_fitting!` determines `format_one_line` doesn't fit → chooses `format_expanded` → chain expands to one-method-per-line.
+2. **Pass 2**: The object now has leading newlines from Pass 1. `object_like.rs` detects `members_have_leading_newline() = true` → sets `GroupMode::Expand`. This causes `grouped_breaks = true` in call arguments, which skips the flat variants, making the middle variant (with `GroupMode::Expand`) the `BestFitting::most_flat()`. The printer's `fits` check encounters `GroupMode::Expand`, switches to `PrintMode::Expanded`, hits a soft line break, and returns `Fits::Yes` — making `format_one_line` appear to fit when it shouldn't. The chain collapses to inline form.
+3. **Pass 3** === Pass 2 (stable), but Pass 1 !== Pass 2 — idempotency violated.
+
+**Why this fix**: Forcing the expanded layout when `last_group().will_break()` is true ensures the first pass produces a stable result directly. The expanded form is always stable because re-formatting expanded output doesn't change the `GroupMode` in a way that alters the layout decision.
+
+### Files Modified
+- `crates/biome_js_formatter/src/utils/member_chain/mod.rs` — core fix (split the `will_break` + `has_empty_line_before_tail` condition)
+- `crates/biome_js_formatter/tests/specs/js/module/expression/member-chain/static_member_regex.js.snap` — updated internal snapshot
+- 6 new Prettier comparison `.snap` files — cases where Biome now diverges from Prettier by expanding chains
+
+### New Files
+- `crates/biome_js_formatter/tests/specs/js/module/call/member_chain_object_arg/member_chain_object_arg.js` — test input
+- `crates/biome_js_formatter/tests/specs/js/module/call/member_chain_object_arg/options.json` — lineWidth: 120
+- `crates/biome_js_formatter/tests/specs/js/module/call/member_chain_object_arg/member_chain_object_arg.js.snap` — snapshot
+
+### Challenges Faced
+1. **Root cause depth**: The bug involves 4 interacting components (`object_like.rs` → `call_arguments.rs` → `printer/mod.rs` → `member_chain/mod.rs`). I traced the full chain to understand why `BestFitting::most_flat()` differs between passes.
+2. **Fix scope**: A fix in `object_like.rs` (removing `members_have_leading_newline()`) was the most principled but caused 85 test failures. A fix in `call_arguments.rs` (always including flat variants) was insufficient because the flat variant content itself is source-dependent. The member chain fix (6 test failures) was the most practical tradeoff.
+3. **Release build requirement**: Debug builds cause stack overflow on long member chains due to deep recursion. All manual testing required `--release`.
+
+### Branch Link
+- **Working branch**: https://github.com/dadavidtseng/biome/tree/fix-issue-10531
 
 ---
 
