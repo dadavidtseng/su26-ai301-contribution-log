@@ -3,7 +3,7 @@
 **Contribution Number:** 2  
 **Student:** Yu-Wei Tseng  
 **Issue:** [biome#10531 — Formatter still not idempotent on member chains with object-literal args (2.4.16)](https://github.com/biomejs/biome/issues/10531)  
-**Status:** Phase II Complete
+**Status:** Phase IV Complete
 
 ---
 
@@ -205,13 +205,36 @@ Using UMPIRE framework:
 
 ## Pull Request
 
-*(To be completed in Phase IV)*
+**PR Link:** https://github.com/biomejs/biome/pull/10986
+
+**PR Description:** Fixes the JavaScript formatter's non-idempotent behavior on member chains with breaking last groups. When `last_group().will_break()` is true, the formatter now writes the expanded layout directly instead of offering `best_fitting!`, ensuring `format(format(x)) == format(x)`.
+
+**Maintainer Feedback:**
+- (Awaiting initial review)
+
+**Status:** Awaiting review
 
 ---
 
 ## Learnings & Reflections
 
-*(To be completed in Phase IV)*
+### Technical Skills Gained
+
+- Deepened Rust expertise through working on Biome's formatter internals — a second Rust open source contribution after lakekeeper#1064
+- Learned how IR-based formatters work: the `best_fitting` layout algorithm, `GroupMode`, `expand_parent`, and how the printer's `fits` check evaluates layout variants
+- Gained experience with `cargo-insta` snapshot testing and Biome's test infrastructure for formatter regression testing
+- Understood how cross-pass state changes (e.g., `members_have_leading_newline()`) can create feedback loops that violate idempotency
+
+### Challenges Overcome
+
+- The root cause involved 4 interacting components (`object_like.rs` → `call_arguments.rs` → `printer/mod.rs` → `member_chain/mod.rs`). Tracing the full cascade required deep reading and debugging across all four files
+- Evaluated multiple fix locations: `object_like.rs` (85 test failures), `call_arguments.rs` (insufficient), and `member_chain/mod.rs` (6 test failures, practical tradeoff). Chose the most targeted fix with the smallest blast radius
+- Debug builds cause stack overflow on long member chains — all manual testing required `--release` builds, which added iteration time
+
+### What I'd Do Differently Next Time
+
+- Would write a failing idempotency test first, before diving into root cause analysis, to have a concrete regression guard from the start
+- Would explore the `Printer::fits` check more systematically using debug logging, rather than reasoning about it purely from code reading
 
 ---
 
