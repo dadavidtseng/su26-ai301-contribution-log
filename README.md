@@ -10,3 +10,4 @@
 |---|-------|---------|--------|
 | 1 | [lakekeeper#1064 — Deleted namespaces may leave traces on filesystems](ISSUE1.md) | [lakekeeper](https://github.com/lakekeeper/lakekeeper) | Phase IV Complete |
 | 2 | [biome#10531 — Formatter not idempotent on member chains with object-literal args](ISSUE2.md) | [biome](https://github.com/biomejs/biome) | Phase IV Complete |
+| 3 | [gradio#13670 — MCP tool schemas never emit a `required` array](ISSUE3.md) | [gradio](https://github.com/gradio-app/gradio) | Phase I Complete |
