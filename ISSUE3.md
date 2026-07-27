@@ -3,7 +3,7 @@
 **Contribution Number:** 3  
 **Student:** Yu-Wei Tseng  
 **Issue:** [biome#11092 -- noUselessTernary double space in quick fix](https://github.com/biomejs/biome/issues/11092)  
-**Status:** Phase II Complete
+**Status:** Phase III Complete
 
 ---
 
@@ -135,13 +135,52 @@ node.test().ok()?.as_js_in_expression()?.in_token().ok()?
 
 ## Testing Strategy
 
-*(To be completed in Phase III)*
+### Existing Tests
+
+All 3 existing test suites pass after the fix:
+- `valid.js` -- valid cases that should NOT trigger the rule (unchanged)
+- `invalid.js` -- invalid cases with trivia (spaces). Previously had double-space artifacts in snapshots; now corrected.
+- `invalid_without_trivia.js` -- invalid cases without trivia. Previously used `token_decorated_with_space` to inject spacing; now preserves original (no-space) formatting.
+
+### New Test Case
+
+Added a regression test in `invalid.js` matching the issue reporter's reproduction:
+```javascript
+// Regression test: no double space before operator (biome#11092)
+const pauseEventLane = document.cookie.indexOf('cid_debug=false') > -1 ? true : false;
+```
+
+The snapshot confirms the fix output is `document.cookie.indexOf('cid_debug=false') > -1` (single space, no double space).
+
+### Validation
+
+- `cargo test -p biome_js_analyze -- no_useless_ternary`: 3/3 pass
+- `cargo fmt -- --check`: passes
+- Snapshots updated via `cargo insta test --accept`
 
 ---
 
 ## Implementation Notes
 
-*(To be completed in Phase III)*
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `crates/biome_js_analyze/src/lint/complexity/no_useless_ternary.rs` | Replaced `make::token_decorated_with_space(...)` with original operator tokens in 3 match arms (binary, instanceof, in) |
+| `crates/biome_js_analyze/tests/specs/complexity/noUselessTernary/invalid.js` | Added regression test case from issue #11092 |
+| `crates/biome_js_analyze/tests/specs/complexity/noUselessTernary/invalid.js.snap` | Updated snapshot (double spaces removed, new test case added) |
+| `crates/biome_js_analyze/tests/specs/complexity/noUselessTernary/invalid_without_trivia.js.snap` | Updated snapshot (no longer injects spaces via `token_decorated_with_space`) |
+
+### What Changed
+
+The `action` method's three operator match arms (`JS_BINARY_EXPRESSION`, `JS_INSTANCEOF_EXPRESSION`, `JS_IN_EXPRESSION`) were creating new operator tokens with `make::token_decorated_with_space()`, which unconditionally adds leading + trailing whitespace trivia. Since the `left` child node already retains its trailing trivia from the original AST, this doubled the spacing.
+
+The fix reuses the original operator token from the AST instead of creating a synthetic one. This is the same approach already used by `invert_expression()` in the same file (line 269), so it's consistent with existing patterns.
+
+### Challenges
+
+- Understanding biome's CST trivia model: whitespace in biome's concrete syntax tree is attached as trailing trivia to the preceding token. This made the root cause non-obvious at first -- the double space comes from combining the `left` node's trailing trivia with the new token's leading trivia.
+- The existing test snapshots already contained the bug (`foo··===·1`), confirming it wasn't limited to the reporter's case.
 
 ---
 
