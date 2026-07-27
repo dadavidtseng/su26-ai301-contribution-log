@@ -1,22 +1,22 @@
-# Contribution 3: MCP tool schemas never emit a `required` array
+# Contribution 3: noUselessTernary double space in quick fix
 
 **Contribution Number:** 3  
 **Student:** Yu-Wei Tseng  
-**Issue:** [gradio#13670 -- MCP tool schemas never emit a `required` array, so every argument is advertised as optional](https://github.com/gradio-app/gradio/issues/13670)  
+**Issue:** [biome#11092 -- noUselessTernary double space in quick fix](https://github.com/biomejs/biome/issues/11092)  
 **Status:** Phase I Complete
 
 ---
 
 ## Why I Chose This Issue
 
-I chose this issue because it exposes a correctness bug in Gradio's MCP server implementation -- a feature I find compelling as MCP (Model Context Protocol) is becoming the standard for tool interoperability between AI agents and applications. The bug is straightforward: `MCPServer.get_input_schema` in `gradio/mcp.py` builds JSON Schema `properties` for every published MCP tool but never emits a `required` array. Since JSON Schema treats an absent `required` as "nothing is required," every tool advertises all of its arguments as optional -- even arguments that have no default and that the function cannot run without.
+I chose this issue because it is a confirmed formatting bug in a tool I have already contributed to successfully. The `noUselessTernary` rule's quick fix introduces an extraneous double space when replacing a ternary expression like `x > -1 ? true : false` with `x > -1`. Specifically, the output produces `x  > -1` (two spaces before `>`) instead of `x > -1`.
 
 I'm interested in this because:
 
-1. **It's a real-world correctness issue.** MCP clients rely on the schema to know which arguments they must supply. Without `required`, a client can omit mandatory arguments and produce a call that is schema-valid but fails at runtime. This silently degrades the tool-calling experience for every Gradio MCP server deployment.
-2. **It matches my skills and growth goals.** The fix is pure Python and involves JSON Schema -- concepts I'm comfortable with. This is my first contribution to a Hugging Face project, and I want to learn how Gradio's API/MCP infrastructure is structured.
-3. **The scope is well-bounded.** The reporter identified the exact file (`gradio/mcp.py`, lines 1254-1272), the missing field (`required`), and pointed to an existing pattern in `gradio/cli/commands/skills.py` that already derives required-ness from `parameter_has_default`. The data is present; it just needs to be wired into the schema output.
-4. **The issue is fresh and unclaimed.** Filed on July 27, 2026 with zero comments, no assignees, and no linked pull requests. The project (43k stars) is actively maintained by Hugging Face with responsive maintainers.
+1. **It's a confirmed, visible bug.** The quick fix output is visually incorrect and would fail strict formatting checks. The maintainers have confirmed it (`S-Bug-confirmed`) and explicitly want community help (`S-Help-wanted`).
+2. **I already know this codebase.** My second contribution (biome#10531) was also a Biome fix. I'm familiar with the project structure, build tooling, test patterns, and review process. This lets me move faster and with more confidence.
+3. **The scope is surgical.** The bug is in the code action output for a single linter rule (`noUselessTernary`). The fix likely involves adjusting whitespace handling in the rule's fix generator -- probably a one-file change.
+4. **The issue is fresh and unclaimed.** Filed on July 27, 2026 with no human comments (only an automated AgentScan bot), no assignees, and no linked pull requests. The `S-Help-wanted` label means no permission is needed to start work.
 
 ---
 
@@ -24,20 +24,28 @@ I'm interested in this because:
 
 ### Problem Description
 
-Gradio's MCP server publishes JSON Schema for each tool endpoint but omits the `required` array. This makes every argument appear optional to MCP clients, even parameters with no default value that the function cannot operate without.
+The `noUselessTernary` lint rule's quick fix produces a double space before the `>` operator when simplifying a ternary expression. For example:
 
-### Expected Behavior
+**Input:**
+```javascript
+const pauseEventLane = document.cookie.indexOf('cid_debug=false') > -1 ? true : false;
+```
 
-The JSON Schema should include a `required` array listing all parameters where `parameter_has_default` is `False`, following JSON Schema specification.
+**Expected quick fix output:**
+```javascript
+const pauseEventLane = document.cookie.indexOf('cid_debug=false') > -1;
+```
 
-### Current Behavior
+**Actual quick fix output:**
+```javascript
+const pauseEventLane = document.cookie.indexOf('cid_debug=false')  > -1;
+```
 
-The schema only contains `type` and `properties` -- no `required` array. MCP clients have no way to distinguish mandatory from optional arguments.
+Note the double space before `>` in the actual output.
 
 ### Affected Components
 
-- `gradio/mcp.py` -- `get_input_schema` method (lines 1254-1272): builds the schema but never populates `required`
-- `gradio/cli/commands/skills.py` -- contains the existing pattern for checking `parameter_has_default`
+- The `noUselessTernary` rule's code action / fix generator in the Biome linter
 
 ---
 
@@ -79,6 +87,7 @@ The schema only contains `type` and `properties` -- no `required` array. MCP cli
 
 ## Resources Used
 
-- [Gradio Issue #13670](https://github.com/gradio-app/gradio/issues/13670)
-- [Gradio Repository](https://github.com/gradio-app/gradio)
-- [JSON Schema -- required keyword](https://json-schema.org/understanding-json-schema/reference/object#required)
+- [Biome Issue #11092](https://github.com/biomejs/biome/issues/11092)
+- [Biome Repository](https://github.com/biomejs/biome)
+- [Biome Playground Reproduction](https://biomejs.dev/playground/?lintRules=noUselessTernary&tab=formatter&pane=Diagnostics&code=YwBvAG4AcwB0ACAAcABhAHUAcwBlAEUAdgBlAG4AdABMAGEAbgBlACAAPQAgAGQAbwBjAHUAbQBlAG4AdAAuAGMAbwBvAGsAaQBlAC4AaQBuAGQAZQB4AE8AZgAoACcAYwBpAGQAXwBkAGUAYgB1AGcAPQBmAGEAbABzAGUAJwApACAAPgAgAC0AMQAgAD8AIAB0AHIAdQBlACAAOgAgAGYAYQBsAHMAZQA7AA%3D%3D)
+- [Biome CONTRIBUTING.md](https://github.com/biomejs/biome/blob/main/CONTRIBUTING.md)
