@@ -3,7 +3,7 @@
 **Contribution Number:** 3  
 **Student:** Yu-Wei Tseng  
 **Issue:** [biome#11092 -- noUselessTernary double space in quick fix](https://github.com/biomejs/biome/issues/11092)  
-**Status:** Phase I Complete
+**Status:** Phase II Complete
 
 ---
 
@@ -51,13 +51,85 @@ Note the double space before `>` in the actual output.
 
 ## Reproduction Process
 
-*(To be completed in Phase II)*
+### Environment
+
+- **OS:** Windows 11 Home 10.0.26200
+- **Rust:** 1.93.0
+- **Biome:** built from source (fork `main` synced to upstream `125802321c`)
+- **Branch:** `fix-issue-11092` ([link](https://github.com/dadavidtseng/biome/tree/fix-issue-11092))
+
+### Steps to Reproduce
+
+1. Use the [Biome Playground](https://biomejs.dev/playground/?lintRules=noUselessTernary&tab=formatter&pane=Diagnostics&code=YwBvAG4AcwB0ACAAcABhAHUAcwBlAEUAdgBlAG4AdABMAGEAbgBlACAAPQAgAGQAbwBjAHUAbQBlAG4AdAAuAGMAbwBvAGsAaQBlAC4AaQBuAGQAZQB4AE8AZgAoACcAYwBpAGQAXwBkAGUAYgB1AGcAPQBmAGEAbABzAGUAJwApACAAPgAgAC0AMQAgAD8AIAB0AHIAdQBlACAAOgAgAGYAYQBsAHMAZQA7AA%3D%3D) with this input:
+   ```javascript
+   const pauseEventLane = document.cookie.indexOf('cid_debug=false') > -1 ? true : false;
+   ```
+
+2. Observe the quick fix output produces a double space before `>`:
+   ```javascript
+   const pauseEventLane = document.cookie.indexOf('cid_debug=false')  > -1;
+   ```
+
+3. Alternatively, the bug is already visible in existing test snapshots (`invalid.js.snap`):
+   - Line 269: `foo··===·1` (double space before `===`)
+   - Line 379: `x··instanceof·foo` (double space before `instanceof`)
+   - Line 407: `'make'··in·car` (double space before `in`)
+
+### Root Cause
+
+In [no_useless_ternary.rs](https://github.com/biomejs/biome/blob/main/crates/biome_js_analyze/src/lint/complexity/no_useless_ternary.rs), the `action` method reconstructs binary/instanceof/in expressions using `make::token_decorated_with_space(operator)`, which creates a new operator token with leading AND trailing whitespace trivia. However, the `left` node extracted from the original AST already retains its trailing whitespace trivia (the space after the last token). The combination produces a double space:
+
+```
+left trailing trivia: " "  +  operator leading trivia: " "  =  "  " (double space)
+```
+
+Three call sites are affected (lines 159, 178, 188):
+- `make::token_decorated_with_space(operator)` for `JS_BINARY_EXPRESSION`
+- `make::token_decorated_with_space(T![instanceof])` for `JS_INSTANCEOF_EXPRESSION`
+- `make::token_decorated_with_space(T![in])` for `JS_IN_EXPRESSION`
 
 ---
 
 ## Solution Approach
 
-*(To be completed in Phase II)*
+### UMPIRE Analysis
+
+**U - Understand:** The `action` method in `no_useless_ternary.rs` creates new operator tokens with `make::token_decorated_with_space()`, which unconditionally adds leading + trailing whitespace. The `left` child node already has trailing whitespace from the original source, causing doubled spaces.
+
+**M - Match:** The `invert_expression` function in the same file (line 269) uses `make::token(operator)` (bare token, no trivia decoration) and does not exhibit the double space bug. This is the correct pattern.
+
+**P - Plan:** Replace `make::token_decorated_with_space(...)` with the original operator token from the AST in all three match arms. The original token already carries the correct trivia from the source code.
+
+**I - Implement:** (Phase III) Change lines 149-159, 176-179, and 186-189:
+```rust
+// Before (all three arms):
+make::token_decorated_with_space(operator)
+
+// After: reuse the original operator token
+node.test().ok()?.as_js_binary_expression()?.operator_token().ok()?
+node.test().ok()?.as_js_instanceof_expression()?.instanceof_token().ok()?
+node.test().ok()?.as_js_in_expression()?.in_token().ok()?
+```
+
+**R - Review:** The fix is minimal (3 line changes) and isolated to the `action` method. It follows the same approach already used by `invert_expression` in the same file. All operator tokens are preserved from the original AST, so original formatting is maintained.
+
+**E - Evaluate:** After the fix:
+- The issue reporter's case produces `document.cookie.indexOf('cid_debug=false') > -1;` (single space)
+- Existing test snapshots update to remove the double-space artifacts
+- Add a new test case with the reporter's reproduction input
+
+### Files to Modify
+
+| File | Change |
+|------|--------|
+| `crates/biome_js_analyze/src/lint/complexity/no_useless_ternary.rs` | Use original operator tokens instead of `make::token_decorated_with_space` in 3 match arms |
+| `crates/biome_js_analyze/tests/specs/complexity/noUselessTernary/invalid.js` | Add reproduction case from issue |
+| `*.snap` files | Update snapshots via `cargo insta test --accept` |
+
+### Risk Assessment
+
+- **Low risk.** The change preserves the original operator token from the AST instead of creating a synthetic one. This is the same approach `invert_expression` already uses in the same file.
+- **Snapshot changes expected.** Existing double-space artifacts in `invalid.js.snap` and `invalid_without_trivia.js.snap` will be corrected. The no-trivia case will no longer add spaces (e.g., `foo===1` stays as-is instead of becoming `foo === 1`), which is correct behavior -- code actions should not reformulate whitespace; the formatter handles that.
 
 ---
 
