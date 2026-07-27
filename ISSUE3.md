@@ -3,7 +3,7 @@
 **Contribution Number:** 3  
 **Student:** Yu-Wei Tseng  
 **Issue:** [biome#11092 -- noUselessTernary double space in quick fix](https://github.com/biomejs/biome/issues/11092)  
-**Status:** Phase III Complete
+**Status:** Phase IV Complete
 
 ---
 
@@ -186,13 +186,33 @@ The fix reuses the original operator token from the AST instead of creating a sy
 
 ## Pull Request
 
-*(To be completed in Phase IV)*
+**PR Link:** [biomejs/biome#11105](https://github.com/biomejs/biome/pull/11105)
+
+**PR Description:** Fixes the `noUselessTernary` quick fix that produced a double space before the operator when simplifying ternary expressions. The root cause was `make::token_decorated_with_space()` adding leading whitespace to operator tokens when the left child node already had trailing whitespace from the original AST. The fix reuses the original operator token instead of creating a synthetic one.
+
+**Status:** Awaiting review
+
+**Maintainer Feedback:** *(to be updated as review progresses)*
 
 ---
 
 ## Learnings & Reflections
 
-*(To be completed in Phase IV)*
+### Technical Learnings
+
+- **CST trivia model:** Biome uses a Roslyn-style concrete syntax tree where whitespace is attached as "trivia" to tokens. Understanding that trailing trivia belongs to the preceding token was key to diagnosing the double-space bug -- the space after `)` was trailing trivia on `)`, and `token_decorated_with_space` added another leading space to `>`.
+- **Code actions vs. formatters:** Code actions should preserve original formatting and make minimal changes. The formatter is responsible for whitespace normalization. The original code tried to "help" by adding spaces via `token_decorated_with_space`, but this conflicted with existing trivia.
+- **Existing patterns as guides:** The `invert_expression` function in the same file already used the correct approach (bare `make::token` without trivia decoration). Looking at adjacent code in the same file is often the fastest way to find the right pattern.
+
+### Process Learnings
+
+- **Snapshot testing:** Biome's `cargo insta` workflow makes it easy to see exactly how output changes. The double-space bug was already visible in existing snapshots (`foo··===·1`) -- the snapshots were documenting the bug without anyone noticing.
+- **Changeset workflow:** Biome requires a changeset file for user-facing changes, with specific formatting conventions (past tense, link to issue, link to rule docs). Reading existing changesets is the fastest way to learn the format.
+- **Second contribution advantage:** Having contributed to biome before (biome#10531) made this contribution significantly faster. I already knew the build system, test patterns, PR conventions, and project structure.
+
+### What I Would Do Differently
+
+- Check the project's CONTRIBUTING.md for external PR policies **before** selecting an issue. This would have avoided the detour through Gradio (which paused external PRs) and uv (which got claimed while we were evaluating it).
 
 ---
 
