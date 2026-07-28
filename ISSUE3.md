@@ -3,7 +3,7 @@
 **Contribution Number:** 3  
 **Student:** Yu-Wei Tseng  
 **Issue:** [biome#11092 -- noUselessTernary double space in quick fix](https://github.com/biomejs/biome/issues/11092)  
-**Status:** Phase IV Complete
+**Status:** Merged
 
 ---
 
@@ -190,9 +190,9 @@ The fix reuses the original operator token from the AST instead of creating a sy
 
 **PR Description:** Fixes the `noUselessTernary` quick fix that produced a double space before the operator when simplifying ternary expressions. The root cause was `make::token_decorated_with_space()` adding leading whitespace to operator tokens when the left child node already had trailing whitespace from the original AST. The fix reuses the original operator token instead of creating a synthetic one.
 
-**Status:** Awaiting review
+**Status:** Merged (2026-07-28 by @ematipico)
 
-**Maintainer Feedback:** *(to be updated as review progresses)*
+**Maintainer Feedback:** PR approved and merged by @ematipico. Received etiquette feedback about not tagging non-reviewer users (e.g., the issue reporter) for PR reviews -- maintainers review PRs on their own schedule.
 
 ---
 
